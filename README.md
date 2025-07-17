@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/kbthree13-mcp-espn-ff-badge.png)](https://mseep.ai/app/kbthree13-mcp-espn-ff)
+
 # ESPN Fantasy Football MCP Server
 
 ## Overview
