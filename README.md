@@ -18,7 +18,7 @@ This MCP (Model Context Protocol) server allows LLMs like Claude to interact wit
 ### Prerequisites
 
 - Python 3.10 or higher
-- `vu` package manager
+- `uv` package manager
 - [Claude Desktop](https://claude.ai/download) for the best experience
 
 ### Usage with Claude Desktop
