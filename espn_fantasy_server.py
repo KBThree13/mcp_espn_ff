@@ -1,6 +1,5 @@
 from mcp.server.fastmcp import FastMCP
 from espn_api.football import League
-import os
 import sys
 import datetime
 import logging
@@ -8,7 +7,6 @@ import traceback
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("espn-fantasy-football")
 
 # Add stderr logging for Claude Desktop to see
 def log_error(message):
@@ -17,7 +15,7 @@ def log_error(message):
 try:
     # Initialize FastMCP server
     log_error("Initializing FastMCP server...")
-    mcp = FastMCP("espn-fantasy-football", dependancies=['espn-api'])
+    mcp = FastMCP("espn-fantasy-football", dependencies=['espn-api'])
 
     # Constants
     CURRENT_YEAR = datetime.datetime.now().year
@@ -177,14 +175,14 @@ try:
     @mcp.tool()
     async def get_team_info(league_id: int, team_id: int, year: int = CURRENT_YEAR) -> str:
         """Get a team's general information. Including points scored, transactions, etc.
-        
+
         Args:
             league_id: The ESPN fantasy football league ID
             team_id: The team ID in the league (usually 1-12)
             year: Optional year for historical data (defaults to current season)
         """
         try:
-            log_error(f"Getting team roster for league {league_id}, team {team_id}, year {year}")
+            log_error(f"Getting team info for league {league_id}, team {team_id}, year {year}")
             # Get league using stored credentials
             league = api.get_league(SESSION_ID, league_id, year)
 
