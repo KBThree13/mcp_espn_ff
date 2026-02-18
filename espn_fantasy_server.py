@@ -346,6 +346,42 @@ try:
             return f"Error retrieving matchup information: {str(e)}"
 
     @mcp.tool()
+    async def get_free_agents(league_id: int, position: str = None, year: int = CURRENT_YEAR) -> str:
+        """Get available free agents in the league, optionally filtered by position.
+
+        Args:
+            league_id: The ESPN fantasy football league ID
+            position: Optional position filter, e.g. 'QB', 'RB', 'WR', 'TE', 'K', 'D/ST'
+            year: Optional year (defaults to current season)
+        """
+        try:
+            log_error(f"Getting free agents for league {league_id}, position {position}, year {year}")
+            league = api.get_league(SESSION_ID, league_id, year)
+
+            fa_list = league.free_agents(size=50, position=position)
+
+            agents = []
+            for player in fa_list:
+                agents.append({
+                    "name": player.name,
+                    "position": player.position,
+                    "proTeam": player.proTeam,
+                    "total_points": player.total_points,
+                    "projected_total_points": player.projected_total_points,
+                    "percent_owned": player.percent_owned,
+                    "injured": player.injured,
+                })
+
+            return str(agents)
+        except Exception as e:
+            log_error(f"Error retrieving free agents: {str(e)}")
+            traceback.print_exc(file=sys.stderr)
+            if "401" in str(e) or "Private" in str(e):
+                return ("This appears to be a private league. Please use the authenticate tool first with your "
+                    "ESPN_S2 and SWID cookies to access private leagues.")
+            return f"Error retrieving free agents: {str(e)}"
+
+    @mcp.tool()
     async def logout() -> str:
         """Clear stored authentication credentials for this session."""
         try:
