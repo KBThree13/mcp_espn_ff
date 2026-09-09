@@ -1,5 +1,6 @@
 from mcp.server.fastmcp import FastMCP
 from espn_api.football import League
+import os
 import sys
 import datetime
 import logging
@@ -34,12 +35,12 @@ try:
             """Get a league instance with caching, using stored credentials if available"""
             key = f"{league_id}_{year}"
             
-            # Check if we have credentials for this session
-            espn_s2 = None
-            swid = None
+            # Fall back to environment variables; session credentials take priority
+            espn_s2 = os.getenv("ESPN_S2")
+            swid = os.getenv("SWID")
             if session_id in self.credentials:
-                espn_s2 = self.credentials[session_id].get('espn_s2')
-                swid = self.credentials[session_id].get('swid')
+                espn_s2 = self.credentials[session_id].get('espn_s2') or espn_s2
+                swid = self.credentials[session_id].get('swid') or swid
             
             # Create league cache key including auth info
             cache_key = f"{key}_{espn_s2}_{swid}"
