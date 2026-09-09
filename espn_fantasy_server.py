@@ -2,6 +2,7 @@ from mcp.server.fastmcp import FastMCP
 from espn_api.football import League
 import os
 import sys
+import time
 import datetime
 import logging
 import traceback
@@ -22,6 +23,10 @@ try:
     CURRENT_YEAR = datetime.datetime.now().year
     if datetime.datetime.now().month < 7:  # If before July, use previous year
         CURRENT_YEAR -= 1
+
+    # Short enough that roster moves show up promptly, long enough to keep a burst
+    # of tool calls from refetching the league every time.
+    LEAGUE_CACHE_TTL_SECONDS = 60
 
     log_error(f"Using football year: {CURRENT_YEAR}")
 
@@ -45,15 +50,25 @@ try:
             # Create league cache key including auth info
             cache_key = f"{key}_{espn_s2}_{swid}"
             
-            if cache_key not in self.leagues:
-                log_error(f"Creating new league instance for {league_id}, year {year}")
-                try:
-                    self.leagues[cache_key] = League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
-                except Exception as e:
-                    log_error(f"Error creating league: {str(e)}")
-                    raise
-            
-            return self.leagues[cache_key]
+            # League objects snapshot rosters at construction time. Caching one for the
+            # life of the process means adds, drops and lineup changes made in the ESPN
+            # app never show up, so expire the entry instead of holding it forever.
+            cached = self.leagues.get(cache_key)
+            if cached is not None:
+                cached_at, cached_league = cached
+                if (time.time() - cached_at) < LEAGUE_CACHE_TTL_SECONDS:
+                    return cached_league
+                log_error(f"League cache expired for {league_id}, year {year}; refetching")
+
+            log_error(f"Creating new league instance for {league_id}, year {year}")
+            try:
+                league = League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
+            except Exception as e:
+                log_error(f"Error creating league: {str(e)}")
+                raise
+
+            self.leagues[cache_key] = (time.time(), league)
+            return league
         
         def store_credentials(self, session_id, espn_s2, swid):
             """Store credentials for a session"""
