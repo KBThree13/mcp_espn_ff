@@ -72,6 +72,24 @@ try:
     # Create our API instance
     api = ESPNFantasyFootballAPI()
 
+    def _owner_names(team):
+        """Owner display names only.
+
+        team.owners embeds every notificationSetting ESPN has for the owner, which
+        is pure noise for anything we do with it here.
+        """
+        names = []
+        for o in getattr(team, "owners", None) or []:
+            if isinstance(o, dict):
+                full = " ".join(
+                    p for p in (o.get("firstName"), o.get("lastName")) if p
+                ).strip()
+                names.append(full or o.get("displayName") or o.get("id"))
+            else:
+                names.append(str(o))
+        return names
+
+
     def _resolve_team(league, team_id):
         """Resolve a team by its real ESPN team_id, falling back to 1-based position.
 
@@ -161,24 +179,38 @@ try:
                 valid = ", ".join(str(t.team_id) for t in league.teams)
                 return f"Invalid team_id {team_id}. Valid team IDs in this league: {valid}"
             
+            week = getattr(league, "current_week", None)
+
             roster_info = {
                 "team_name": team.team_name,
-                "owner": team.owners,
+                "team_id": team.team_id,
+                "owner": _owner_names(team),
                 "wins": team.wins,
-                "losses": team.losses, 
+                "losses": team.losses,
+                "week": week,
                 "roster": []
             }
-            
+
             for player in team.roster:
+                # Full player.stats carries ESPN's entire projected_breakdown for every
+                # week -- tens of thousands of tokens per roster. Keep only this week's
+                # projection, which is what start/sit decisions actually need.
+                week_proj = None
+                stats = getattr(player, "stats", None) or {}
+                if week in stats:
+                    week_proj = stats[week].get("projected_points")
+
                 roster_info["roster"].append({
                     "name": player.name,
                     "position": player.position,
                     "proTeam": player.proTeam,
+                    "slot": getattr(player, "lineupSlot", None),
+                    "injuryStatus": getattr(player, "injuryStatus", None),
                     "points": player.total_points,
                     "projected_points": player.projected_total_points,
-                    "stats": player.stats
+                    "week_projected_points": week_proj,
                 })
-            
+
             return str(roster_info)
         except Exception as e:
             log_error(f"Error retrieving team roster: {str(e)}")
@@ -210,7 +242,8 @@ try:
 
             team_info = {
                 "team_name": team.team_name,
-                "owner": team.owners,
+                "team_id": team.team_id,
+                "owner": _owner_names(team),
                 "wins": team.wins,
                 "losses": team.losses,
                 "ties": team.ties,
