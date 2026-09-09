@@ -1,6 +1,8 @@
 from mcp.server.fastmcp import FastMCP
 from espn_api.football import League
+import os
 import sys
+import time
 import datetime
 import logging
 import traceback
@@ -22,6 +24,10 @@ try:
     if datetime.datetime.now().month < 7:  # If before July, use previous year
         CURRENT_YEAR -= 1
 
+    # Short enough that roster moves show up promptly, long enough to keep a burst
+    # of tool calls from refetching the league every time.
+    LEAGUE_CACHE_TTL_SECONDS = 60
+
     log_error(f"Using football year: {CURRENT_YEAR}")
 
     class ESPNFantasyFootballAPI:
@@ -34,25 +40,35 @@ try:
             """Get a league instance with caching, using stored credentials if available"""
             key = f"{league_id}_{year}"
             
-            # Check if we have credentials for this session
-            espn_s2 = None
-            swid = None
+            # Fall back to environment variables; session credentials take priority
+            espn_s2 = os.getenv("ESPN_S2")
+            swid = os.getenv("SWID")
             if session_id in self.credentials:
-                espn_s2 = self.credentials[session_id].get('espn_s2')
-                swid = self.credentials[session_id].get('swid')
+                espn_s2 = self.credentials[session_id].get('espn_s2') or espn_s2
+                swid = self.credentials[session_id].get('swid') or swid
             
             # Create league cache key including auth info
             cache_key = f"{key}_{espn_s2}_{swid}"
             
-            if cache_key not in self.leagues:
-                log_error(f"Creating new league instance for {league_id}, year {year}")
-                try:
-                    self.leagues[cache_key] = League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
-                except Exception as e:
-                    log_error(f"Error creating league: {str(e)}")
-                    raise
-            
-            return self.leagues[cache_key]
+            # League objects snapshot rosters at construction time. Caching one for the
+            # life of the process means adds, drops and lineup changes made in the ESPN
+            # app never show up, so expire the entry instead of holding it forever.
+            cached = self.leagues.get(cache_key)
+            if cached is not None:
+                cached_at, cached_league = cached
+                if (time.time() - cached_at) < LEAGUE_CACHE_TTL_SECONDS:
+                    return cached_league
+                log_error(f"League cache expired for {league_id}, year {year}; refetching")
+
+            log_error(f"Creating new league instance for {league_id}, year {year}")
+            try:
+                league = League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
+            except Exception as e:
+                log_error(f"Error creating league: {str(e)}")
+                raise
+
+            self.leagues[cache_key] = (time.time(), league)
+            return league
         
         def store_credentials(self, session_id, espn_s2, swid):
             """Store credentials for a session"""
@@ -70,6 +86,39 @@ try:
 
     # Create our API instance
     api = ESPNFantasyFootballAPI()
+
+    def _owner_names(team):
+        """Owner display names only.
+
+        team.owners embeds every notificationSetting ESPN has for the owner, which
+        is pure noise for anything we do with it here.
+        """
+        names = []
+        for o in getattr(team, "owners", None) or []:
+            if isinstance(o, dict):
+                full = " ".join(
+                    p for p in (o.get("firstName"), o.get("lastName")) if p
+                ).strip()
+                names.append(full or o.get("displayName") or o.get("id"))
+            else:
+                names.append(str(o))
+        return names
+
+
+    def _resolve_team(league, team_id):
+        """Resolve a team by its real ESPN team_id, falling back to 1-based position.
+
+        ESPN team IDs are not guaranteed to be contiguous 1..N -- a league that has
+        dropped a team can expose IDs above len(league.teams), which is what the URL
+        bar shows the user. Match the real id first so those leagues work.
+        """
+        for t in league.teams:
+            if getattr(t, "team_id", None) == team_id:
+                return t
+        if 1 <= team_id <= len(league.teams):
+            return league.teams[team_id - 1]
+        return None
+
 
     # Store a session map
     SESSION_ID = "default_session"
@@ -140,29 +189,43 @@ try:
             league = api.get_league(SESSION_ID, league_id, year)
             
             # Team IDs in ESPN API are 1-based
-            if team_id < 1 or team_id > len(league.teams):
-                return f"Invalid team_id. Must be between 1 and {len(league.teams)}"
+            team = _resolve_team(league, team_id)
+            if team is None:
+                valid = ", ".join(str(t.team_id) for t in league.teams)
+                return f"Invalid team_id {team_id}. Valid team IDs in this league: {valid}"
             
-            team = league.teams[team_id - 1]
-            
+            week = getattr(league, "current_week", None)
+
             roster_info = {
                 "team_name": team.team_name,
-                "owner": team.owners,
+                "team_id": team.team_id,
+                "owner": _owner_names(team),
                 "wins": team.wins,
-                "losses": team.losses, 
+                "losses": team.losses,
+                "week": week,
                 "roster": []
             }
-            
+
             for player in team.roster:
+                # Full player.stats carries ESPN's entire projected_breakdown for every
+                # week -- tens of thousands of tokens per roster. Keep only this week's
+                # projection, which is what start/sit decisions actually need.
+                week_proj = None
+                stats = getattr(player, "stats", None) or {}
+                if week in stats:
+                    week_proj = stats[week].get("projected_points")
+
                 roster_info["roster"].append({
                     "name": player.name,
                     "position": player.position,
                     "proTeam": player.proTeam,
+                    "slot": getattr(player, "lineupSlot", None),
+                    "injuryStatus": getattr(player, "injuryStatus", None),
                     "points": player.total_points,
                     "projected_points": player.projected_total_points,
-                    "stats": player.stats
+                    "week_projected_points": week_proj,
                 })
-            
+
             return str(roster_info)
         except Exception as e:
             log_error(f"Error retrieving team roster: {str(e)}")
@@ -187,14 +250,15 @@ try:
             league = api.get_league(SESSION_ID, league_id, year)
 
             # Team IDs in ESPN API are 1-based
-            if team_id < 1 or team_id > len(league.teams):
-                return f"Invalid team_id. Must be between 1 and {len(league.teams)}"
-            
-            team = league.teams[team_id - 1]
+            team = _resolve_team(league, team_id)
+            if team is None:
+                valid = ", ".join(str(t.team_id) for t in league.teams)
+                return f"Invalid team_id {team_id}. Valid team IDs in this league: {valid}"
 
             team_info = {
                 "team_name": team.team_name,
-                "owner": team.owners,
+                "team_id": team.team_id,
+                "owner": _owner_names(team),
                 "wins": team.wins,
                 "losses": team.losses,
                 "ties": team.ties,
@@ -344,6 +408,105 @@ try:
                 return ("This appears to be a private league. Please use the authenticate tool first with your "
                       "ESPN_S2 and SWID cookies to access private leagues.")
             return f"Error retrieving matchup information: {str(e)}"
+
+    @mcp.tool()
+    async def get_free_agents(league_id: int, position: str = None, size: int = 25,
+                              week: int = None, year: int = CURRENT_YEAR) -> str:
+        """Get available free agents and waiver-wire players, best projection first.
+
+        Args:
+            league_id: The ESPN fantasy football league ID
+            position: Optional filter -- QB, RB, WR, TE, K, D/ST
+            size: How many players to return (default 25)
+            week: Week to project for (defaults to the current week)
+            year: Optional year (defaults to current season)
+        """
+        try:
+            log_error(f"Getting free agents for league {league_id}, position {position}, year {year}")
+            league = api.get_league(SESSION_ID, league_id, year)
+
+            if week is None:
+                week = getattr(league, "current_week", None)
+
+            # ESPN's filter treats FREEAGENT and WAIVERS as one pool, so this covers
+            # both players you can add outright and ones still on waivers.
+            players = league.free_agents(week=week, size=size, position=position)
+
+            results = []
+            for player in players:
+                stats = getattr(player, "stats", None) or {}
+                week_proj = stats[week].get("projected_points") if week in stats else None
+                results.append({
+                    "name": player.name,
+                    "position": player.position,
+                    "proTeam": player.proTeam,
+                    "injuryStatus": getattr(player, "injuryStatus", None),
+                    "percent_owned": round(getattr(player, "percent_owned", 0) or 0, 1),
+                    "projected_points": player.projected_total_points,
+                    "week_projected_points": week_proj,
+                })
+
+            results.sort(key=lambda p: p["week_projected_points"] or -1, reverse=True)
+            return str({"week": week, "position": position or "ALL", "players": results})
+        except Exception as e:
+            log_error(f"Error retrieving free agents: {str(e)}")
+            traceback.print_exc(file=sys.stderr)
+            if "401" in str(e) or "Private" in str(e):
+                return ("This appears to be a private league. Please use the authenticate tool first with your "
+                      "ESPN_S2 and SWID cookies to access private leagues.")
+            return f"Error retrieving free agents: {str(e)}"
+
+    @mcp.tool()
+    async def get_league_settings(league_id: int, year: int = CURRENT_YEAR) -> str:
+        """Get a league's scoring rules, starting lineup, and playoff/waiver settings.
+
+        Args:
+            league_id: The ESPN fantasy football league ID
+            year: Optional year (defaults to current season)
+        """
+        try:
+            log_error(f"Getting league settings for league {league_id}, year {year}")
+            league = api.get_league(SESSION_ID, league_id, year)
+            s = league.settings
+
+            deadline = getattr(s, "trade_deadline", 0)
+            if deadline:
+                # ESPN reports the deadline as epoch milliseconds.
+                deadline = datetime.datetime.fromtimestamp(deadline / 1000).strftime("%Y-%m-%d %H:%M")
+            else:
+                deadline = None
+
+            # scoring_format lists every stat ESPN tracks; most are worth 0 in a given
+            # league, so keep only the rules that actually move the score.
+            scoring = [
+                {"stat": r.get("label"), "abbr": r.get("abbr"), "points": r.get("points")}
+                for r in getattr(s, "scoring_format", []) or []
+                if r.get("points")
+            ]
+
+            info = {
+                "name": s.name,
+                "scoring_type": getattr(s, "scoring_type", None),
+                "team_count": s.team_count,
+                "regular_season_weeks": s.reg_season_count,
+                "playoff_teams": s.playoff_team_count,
+                "playoff_matchup_length_weeks": getattr(s, "playoff_matchup_period_length", None),
+                "tie_rule": getattr(s, "tie_rule", None),
+                "starting_lineup": getattr(s, "position_slot_counts", None),
+                "uses_faab": getattr(s, "faab", None),
+                "faab_budget": getattr(s, "acquisition_budget", None),
+                "trade_deadline": deadline,
+                "veto_votes_required": getattr(s, "veto_votes_required", None),
+                "scoring_rules": scoring,
+            }
+            return str(info)
+        except Exception as e:
+            log_error(f"Error retrieving league settings: {str(e)}")
+            traceback.print_exc(file=sys.stderr)
+            if "401" in str(e) or "Private" in str(e):
+                return ("This appears to be a private league. Please use the authenticate tool first with your "
+                      "ESPN_S2 and SWID cookies to access private leagues.")
+            return f"Error retrieving league settings: {str(e)}"
 
     @mcp.tool()
     async def logout() -> str:
