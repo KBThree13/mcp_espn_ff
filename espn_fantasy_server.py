@@ -72,6 +72,21 @@ try:
     # Create our API instance
     api = ESPNFantasyFootballAPI()
 
+    def _resolve_team(league, team_id):
+        """Resolve a team by its real ESPN team_id, falling back to 1-based position.
+
+        ESPN team IDs are not guaranteed to be contiguous 1..N -- a league that has
+        dropped a team can expose IDs above len(league.teams), which is what the URL
+        bar shows the user. Match the real id first so those leagues work.
+        """
+        for t in league.teams:
+            if getattr(t, "team_id", None) == team_id:
+                return t
+        if 1 <= team_id <= len(league.teams):
+            return league.teams[team_id - 1]
+        return None
+
+
     # Store a session map
     SESSION_ID = "default_session"
 
@@ -141,10 +156,10 @@ try:
             league = api.get_league(SESSION_ID, league_id, year)
             
             # Team IDs in ESPN API are 1-based
-            if team_id < 1 or team_id > len(league.teams):
-                return f"Invalid team_id. Must be between 1 and {len(league.teams)}"
-            
-            team = league.teams[team_id - 1]
+            team = _resolve_team(league, team_id)
+            if team is None:
+                valid = ", ".join(str(t.team_id) for t in league.teams)
+                return f"Invalid team_id {team_id}. Valid team IDs in this league: {valid}"
             
             roster_info = {
                 "team_name": team.team_name,
@@ -188,10 +203,10 @@ try:
             league = api.get_league(SESSION_ID, league_id, year)
 
             # Team IDs in ESPN API are 1-based
-            if team_id < 1 or team_id > len(league.teams):
-                return f"Invalid team_id. Must be between 1 and {len(league.teams)}"
-            
-            team = league.teams[team_id - 1]
+            team = _resolve_team(league, team_id)
+            if team is None:
+                valid = ", ".join(str(t.team_id) for t in league.teams)
+                return f"Invalid team_id {team_id}. Valid team IDs in this league: {valid}"
 
             team_info = {
                 "team_name": team.team_name,
