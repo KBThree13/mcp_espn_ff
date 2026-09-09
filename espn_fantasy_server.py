@@ -410,6 +410,53 @@ try:
             return f"Error retrieving matchup information: {str(e)}"
 
     @mcp.tool()
+    async def get_free_agents(league_id: int, position: str = None, size: int = 25,
+                              week: int = None, year: int = CURRENT_YEAR) -> str:
+        """Get available free agents and waiver-wire players, best projection first.
+
+        Args:
+            league_id: The ESPN fantasy football league ID
+            position: Optional filter -- QB, RB, WR, TE, K, D/ST
+            size: How many players to return (default 25)
+            week: Week to project for (defaults to the current week)
+            year: Optional year (defaults to current season)
+        """
+        try:
+            log_error(f"Getting free agents for league {league_id}, position {position}, year {year}")
+            league = api.get_league(SESSION_ID, league_id, year)
+
+            if week is None:
+                week = getattr(league, "current_week", None)
+
+            # ESPN's filter treats FREEAGENT and WAIVERS as one pool, so this covers
+            # both players you can add outright and ones still on waivers.
+            players = league.free_agents(week=week, size=size, position=position)
+
+            results = []
+            for player in players:
+                stats = getattr(player, "stats", None) or {}
+                week_proj = stats[week].get("projected_points") if week in stats else None
+                results.append({
+                    "name": player.name,
+                    "position": player.position,
+                    "proTeam": player.proTeam,
+                    "injuryStatus": getattr(player, "injuryStatus", None),
+                    "percent_owned": round(getattr(player, "percent_owned", 0) or 0, 1),
+                    "projected_points": player.projected_total_points,
+                    "week_projected_points": week_proj,
+                })
+
+            results.sort(key=lambda p: p["week_projected_points"] or -1, reverse=True)
+            return str({"week": week, "position": position or "ALL", "players": results})
+        except Exception as e:
+            log_error(f"Error retrieving free agents: {str(e)}")
+            traceback.print_exc(file=sys.stderr)
+            if "401" in str(e) or "Private" in str(e):
+                return ("This appears to be a private league. Please use the authenticate tool first with your "
+                      "ESPN_S2 and SWID cookies to access private leagues.")
+            return f"Error retrieving free agents: {str(e)}"
+
+    @mcp.tool()
     async def logout() -> str:
         """Clear stored authentication credentials for this session."""
         try:
