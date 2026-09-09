@@ -457,6 +457,58 @@ try:
             return f"Error retrieving free agents: {str(e)}"
 
     @mcp.tool()
+    async def get_league_settings(league_id: int, year: int = CURRENT_YEAR) -> str:
+        """Get a league's scoring rules, starting lineup, and playoff/waiver settings.
+
+        Args:
+            league_id: The ESPN fantasy football league ID
+            year: Optional year (defaults to current season)
+        """
+        try:
+            log_error(f"Getting league settings for league {league_id}, year {year}")
+            league = api.get_league(SESSION_ID, league_id, year)
+            s = league.settings
+
+            deadline = getattr(s, "trade_deadline", 0)
+            if deadline:
+                # ESPN reports the deadline as epoch milliseconds.
+                deadline = datetime.datetime.fromtimestamp(deadline / 1000).strftime("%Y-%m-%d %H:%M")
+            else:
+                deadline = None
+
+            # scoring_format lists every stat ESPN tracks; most are worth 0 in a given
+            # league, so keep only the rules that actually move the score.
+            scoring = [
+                {"stat": r.get("label"), "abbr": r.get("abbr"), "points": r.get("points")}
+                for r in getattr(s, "scoring_format", []) or []
+                if r.get("points")
+            ]
+
+            info = {
+                "name": s.name,
+                "scoring_type": getattr(s, "scoring_type", None),
+                "team_count": s.team_count,
+                "regular_season_weeks": s.reg_season_count,
+                "playoff_teams": s.playoff_team_count,
+                "playoff_matchup_length_weeks": getattr(s, "playoff_matchup_period_length", None),
+                "tie_rule": getattr(s, "tie_rule", None),
+                "starting_lineup": getattr(s, "position_slot_counts", None),
+                "uses_faab": getattr(s, "faab", None),
+                "faab_budget": getattr(s, "acquisition_budget", None),
+                "trade_deadline": deadline,
+                "veto_votes_required": getattr(s, "veto_votes_required", None),
+                "scoring_rules": scoring,
+            }
+            return str(info)
+        except Exception as e:
+            log_error(f"Error retrieving league settings: {str(e)}")
+            traceback.print_exc(file=sys.stderr)
+            if "401" in str(e) or "Private" in str(e):
+                return ("This appears to be a private league. Please use the authenticate tool first with your "
+                      "ESPN_S2 and SWID cookies to access private leagues.")
+            return f"Error retrieving league settings: {str(e)}"
+
+    @mcp.tool()
     async def logout() -> str:
         """Clear stored authentication credentials for this session."""
         try:
