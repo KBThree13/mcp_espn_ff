@@ -74,6 +74,29 @@ try:
     # Store a session map
     SESSION_ID = "default_session"
 
+    # Persistent credentials: auto-load from .env next to this script at startup.
+    # Survives restarts; all agents sharing this MCP server inherit auth.
+    def _load_env_credentials():
+        try:
+            env_path = __import__("pathlib").Path(__file__).resolve().parent / ".env"
+            if not env_path.exists():
+                return
+            creds = {}
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                creds[k.strip()] = v.strip()
+            espn_s2 = creds.get("ESPN_S2")
+            swid = creds.get("ESPN_SWID")
+            if espn_s2 and swid:
+                api.store_credentials(SESSION_ID, espn_s2, swid)
+                log_error("Loaded persistent credentials from .env")
+        except Exception as e:
+            log_error(f"Failed to load .env credentials: {e}")
+    _load_env_credentials()
+
     @mcp.tool()
     async def authenticate(espn_s2: str, swid: str) -> str:
         """Store ESPN authentication credentials for this session.
@@ -154,12 +177,27 @@ try:
             }
             
             for player in team.roster:
+                # week points: latest scoring period with actual stats
+                week_points = 0
+                week_projected = 0
+                for sp, st in sorted(player.stats.items()):
+                    if sp == 0:
+                        continue
+                    if st.get("points"):
+                        week_points = st["points"]
+                    week_projected = st.get("projected_points", week_projected)
                 roster_info["roster"].append({
                     "name": player.name,
                     "position": player.position,
                     "proTeam": player.proTeam,
+                    "lineupSlot": player.lineupSlot or "Bench",
+                    "isStarter": player.lineupSlot not in ("BE", "Bench", "", "IR"),
+                    "injuryStatus": player.injuryStatus,
+                    "active_status": getattr(player, "active_status", None),
                     "points": player.total_points,
                     "projected_points": player.projected_total_points,
+                    "week_points": week_points,
+                    "week_projected": week_projected,
                     "stats": player.stats
                 })
             
